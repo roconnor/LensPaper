@@ -1,0 +1,772 @@
+\documentclass{article}
+\usepackage{amsmath,color,alltt}
+
+%%%%%%%%%% Start TeXmacs macros
+\newcommand{\email}[1]{{\textit{Email:} \texttt{#1}}}
+\newcommand{\tmbsl}{\ensuremath{\backslash}}
+\newcommand{\tmem}[1]{{\em #1\/}}
+\newcommand{\tmtexttt}[1]{{\ttfamily{#1}}}
+\definecolor{grey}{rgb}{0.75,0.75,0.75}
+\definecolor{orange}{rgb}{1.0,0.5,0.5}
+\definecolor{brown}{rgb}{0.5,0.25,0.0}
+\definecolor{pink}{rgb}{1.0,0.5,0.5}
+%%%%%%%%%% End TeXmacs macros
+
+\begin{document}
+
+\title{Working Title}\author{Edward Kmett\and Twan van Laarhoven\and Russell
+O'Connor\thanks{\email{oconnorr@google.com}}}\maketitle
+
+\section{Licence}
+
+\section{Introduction}
+
+\section{Lenses}
+
+It is a common programming idiom to access a field of a record via getter and
+setter functions. For example, consider the following personel record
+\begin{alltt}
+data Person = Person String -- Name
+                     String -- Address
+                     String -- Email
+\end{alltt}
+
+
+We can define getters for each fields
+\begin{alltt}
+get_name, get_address, get_email :: Person -> String
+get_name (Person name _ _) = name
+get_address (Person _ address _) = address
+get_email (Person _ _ email) = email
+\end{alltt}
+
+
+And we can define the setters for the each field
+\begin{alltt}
+set_name, set_address, set_email :: String -> Person -> Persion
+set_name name (Person _ address email) = Person name address email
+set_name address (Person name _ email) = Person name address email
+set_name email (Person name address _) = Person name address email
+\end{alltt}
+
+
+In function programming all values are immutable, so that the setter function
+returns a new record that is a copy of the orginal record with the field
+updated.
+
+In general, suppose \tmtexttt{a} is the type of a record and \tmtexttt{b} is
+the type of one of its fields. We can formalize this accessor idiom in a
+structure known as a lens, also known as a functional reference.
+\begin{alltt}
+data Lens a b = Lens { getter :: a -> b
+                     , setter :: b -> a -> a
+                     }
+\end{alltt}
+For example, we can build a lens for the \tmtexttt{name} field of
+\tmtexttt{Person} as follows.
+\begin{alltt}
+name :: Lens Person String
+name = Lens get_name set_name
+\end{alltt}
+
+
+In order for the getter and setter to be coherent we require it to satify
+three laws.
+\begin{eqnarray*}
+  \text{\tmtexttt{getter}} l \left( \text{\tmtexttt{setter}} l b a \right) & =
+  & b\\
+  \text{\tmtexttt{setter}} l \left( \text{\tmtexttt{getter}} l a \right) a & =
+  & a\\
+  \text{\tmtexttt{setter}} l b_2  \left( \text{\tmtexttt{setter}} l b_1 a
+  \right) & = & \text{\tmtexttt{setter}} l b_2 a
+\end{eqnarray*}
+The first law says that you get what you set. \ The second law says that if
+you reset the value you get, the resulting record is the same as you started
+with. The third law says that the second setting obliterates the first
+setting. \ These three laws are the laws of Pierce's {\tmem{very-well behaved
+lens}}. \ In this paper we will only be considering {\tmem{very-well behaved
+lenses}}, and we will simply call them {\tmem{lenses}}. {\color{red} Also the
+laws of Kagawa.}
+
+We cannot use the type system to enforce these laws, so we will assume that
+anyone who create a value of type \tmtexttt{Lens a b} has verified that these
+three laws hold. We consider values that do not satify these laws as invalid.
+
+\subsection{Using Lenses}
+
+Infix functions for getters and setters provide lightweight notation for
+accessing fields of records.
+\begin{alltt}
+(^.) :: a -> Lens a b -> b
+a^.l = getter l a
+
+(<~) :: Lens a b -> b -> a -> a
+l <~ v = setter l v
+
+(%~) :: Lens a b -> (b -> b) -> a -> a
+l <~ f = \a -> l <~ f (a^.l) $ a
+\end{alltt}
+
+
+For example, suppose have the following \tmtexttt{Person}.
+\begin{alltt}
+harper :: Person
+harper = Person
+  ``Steven Harper''
+  ``Calgary''
+  ``steven@example.com''
+\end{alltt}
+
+
+We can access and update this person with our operators.
+
+
+\begin{eqnarray*}
+  \text{\tmtexttt{harper\^{ }.name}} & = & \text{\tmtexttt{``Steven
+  Harper''}}\\
+  \text{\tmtexttt{address<\~{ }harper \$ ``Ottawa''}} & = &
+  \text{\tmtexttt{Person ``Steven Harper'' ``Ottawa'' ``steven@example.com''}}
+\end{eqnarray*}
+
+\subsection{Combining Lenses}
+
+A powerful features of lenses is that they are composable in the sense that
+they form a \tmtexttt{Category}.
+\begin{alltt}
+instance Category Lens where
+  id :: Lens a a
+  id = Lens id (const id)
+  (.) :: Lens b c -> Lens a b -> Lens a c
+  l2 . l1 = Lens (getter l2 . getter l1)
+                 (\c -> l1 %~ (l2 <~ c))
+\end{alltt}
+
+
+{\color{red} Example.}
+
+\subsection{Lens for Maps}
+
+Lenses can be used for structures other than records. \ They can be used for
+any structure to refer to a particular substructure, even substructures that
+are not synticitcally substructures by construction, but are only semantically
+substructures. \ Consider the example of \tmtexttt{Data.Map.Map}. For each
+key, we can build a lens that references the location corresponding to that
+key.
+\begin{alltt}
+at :: (Ord k) => k -> Lens (Map k v) (Maybe v)
+at k = Lens (lookup k) (\v m -> maybe (delete k m) (\v' -> insert k v m) v)
+\end{alltt}
+
+
+Given a map \tmtexttt{m} \ we can lookup a value at the key \tmtexttt{k} with
+\tmtexttt{m\^{ }.at k} which will return \tmtexttt{Nothing} if the key is not
+in the map, and returns \tmtexttt{Just v} if there is a key in the map. The
+setter is used both delete and insert values into the map. \ The expression
+\tmtexttt{at k <\~{ } Nothing \$ m} will remove the key from the map, and the
+expression \tmtexttt{at k <\~{ } Just v \$ m} will insert or overwrite the
+value \tmtexttt{v} into the map \tmtexttt{m} at key \tmtexttt{k}.
+
+Notice that \tmtexttt{Maybe v} isn't syntatically a substructure of the
+\tmtexttt{Data.Map} implementation, however it is semantically a substructure,
+so we can build lenses that reference it. The interested reader can verify
+that the three lens laws hold.
+
+\subsection{Coalgebra of the Store Comonad}
+
+Both the getter and setter function have a parameter of type \tmtexttt{a}, the
+type of the record, so we can factor{\color{red} ?} the \tmtexttt{Lens}
+structure into the type \tmtexttt{a -> (b, b -> a)}. The codomain of this
+structure, \tmtexttt{(b, b -> a)} is known as a {\tmem{store}} comonad, and is
+dual to the familiar a state monad. \ Thus we can alternatively define a lens
+structure as
+\begin{alltt}
+data Store i a = Store { peek :: i -> a
+                       , 
+                       }
+
+newtype Lens a b = Lens { runLens :: a -> Store b a }
+\end{alltt}
+
+
+We can build our example lens for the \tmtexttt{name} field of
+\tmtexttt{Person} as follows.
+\begin{alltt}
+nameLens :: Lens Person String
+nameLens = Lens \(Person name address email) ->
+                Store (\newName -> Person newName address email) name
+\end{alltt}
+
+
+With this representation, the getter and setter functions are defined as
+follows.
+
+
+\begin{alltt}
+getter :: Lens a b -> a -> b
+getter l a = pos (l a)
+
+setter :: Lens a b -> b -> a -> a
+setter l b a = peek (l a) b
+\end{alltt}
+
+
+And conversely, given a getter and setter we can build a \tmtexttt{Lens}.
+
+
+\begin{alltt}
+mkLens :: (a -> b) -> (b -> a -> a) -> Lens a b
+mkLens gtr str = Lens \a -> Store (\b -> str b a) a
+\end{alltt}
+
+
+However, it is more efficent to define a lens directly as we did in
+\tmtexttt{nameLens} above.
+
+Naturally we require the three getter/setter laws to hold for the a lens to be
+valid. There is, however, a more natural way to express these laws in this
+representation, but first we need to define the comonad operations of the
+store comonad.
+
+Dual to monads, comonads are \tmtexttt{Functor}s with two operations which we
+call \tmtexttt{extract} and \tmtexttt{duplicate}.
+\begin{alltt}
+class Functor w => Comonad w where
+  extract :: w a -> a
+  duplicate :: w a -> w (w a)
+  extend :: (w a -> b) -> w a -> w b
+  extend f = fmap f . duplicate
+\end{alltt}
+
+
+Comonads are required to satify three laws, which are dual to the monad laws:
+\begin{eqnarray*}
+  \text{\tmtexttt{extract}} \circ \text{\tmtexttt{duplicate}} & = &
+  \text{\tmtexttt{id}}\\
+  \text{\tmtexttt{fmap extract}} \circ \text{\tmtexttt{duplicate}} & = &
+  \text{\tmtexttt{id}}\\
+  \text{\tmtexttt{fmap duplicate}} \circ \text{\tmtexttt{duplicate}} & = &
+  \text{\tmtexttt{duplicate}} \circ \text{\tmtexttt{duplicate}}
+\end{eqnarray*}
+To show that \tmtexttt{Store b} forms a comonad, we need to define
+\tmtexttt{fmap}, \tmtexttt{extend} and \tmtexttt{duplicate} and prove that it
+satifies the required laws.
+\begin{alltt}
+instance Functor (Store i) where
+  fmap f (Store v b) = Store (f . v) b
+
+instance Comonad (Store i) where
+  extract (Store v b) = v b
+  duplicate (Store v b) = Store (Store v) b
+\end{alltt}
+
+
+Interested readers can find the proof that the comonad laws are satified in
+Appendix~.
+
+
+
+With the \tmtexttt{Store} comonad operations in hand, we can state the
+alternative form the lens laws.
+\begin{eqnarray*}
+  \text{\tmtexttt{extract}} \circ \text{\tmtexttt{runLens l}} & = &
+  \text{\tmtexttt{id}}\\
+  \text{\tmtexttt{duplicate}} \circ \text{\tmtexttt{runLens l}} & = &
+  \text{\tmtexttt{fmap (runLens l)}} \circ \text{\tmtexttt{runLens l}}
+\end{eqnarray*}
+These two laws are equivalent to the three lense laws. \ Notice that these
+laws are expressed entirely in terms of the comonad functions. \ For any
+comonad \tmtexttt{w}, any function of type \tmtexttt{a -> w a} that satifies
+these two laws is called a {\tmem{coalgebra for the \tmtexttt{w} comonad}}. \
+So lenses are precisely the coalgebras of for the \tmtexttt{Store b} comonad.
+
+In this representation, the identity lens and lens composition is defined as
+follows with the help of this \tmtexttt{experiment} function.
+\begin{alltt}
+experiment :: Functor f => (i -> f i) -> Store i a -> f a
+experiment f (Store v b) = v <$> f b
+
+instance Category Lens where
+  id = Lens (Store id)
+  Lens l2 . Lens l1 = Lens (experiment l2 . l1)
+\end{alltt}
+
+\subsection{van Laarhoven Lenses}
+
+The \tmtexttt{experiment} function completely characterises the
+\tmtexttt{Store i a} in the sense that
+
+\tmtexttt{flip experiment :: Store i a -> forall f. (Functor f) => (i -> f i)
+-> f a}
+
+{\noindent}forms a isomorphism between \tmtexttt{Store i a} and
+\tmtexttt{forall f. (Functor f) => (i -> f i) -> f a}. \ The inverse of this
+isomorphism is
+
+\tmtexttt{\tmbsl f -> f (Store id) :: (forall f. (Functor f) => (i -> f i) ->
+f a)) -> Store i a}.
+
+This means that \tmtexttt{a -> forall f. (Functor f) => (i -> f i) -> f a} is
+another representation of lenses. \ After rearraning the parameters we get the
+van Laarhoven lens representation.
+
+\tmtexttt{type Lens a b = forall f. (Functor f) => (b -> f b) -> a -> f a}
+
+
+
+The definition of \tmtexttt{nameLens} in this represenation is
+\begin{alltt}
+nameLens :: Lens Person String
+nameLens f (Person name address email) =
+  (\newName -> Person newName address email) <$> (f name)
+\end{alltt}
+
+
+We can easily build a coalgebra of the store comonad from this represenation
+by appealing to the inverse isomorphism. \
+
+
+\begin{alltt}
+mkCoalgebra :: Lens a b -> a -> Store b a
+mkCoalgebra l = l (Store id)
+\end{alltt}
+
+
+Conversely, given a coalgebra of the store comonad we can build a van
+Laarhoven lens using \tmtexttt{experiment}.
+
+
+\begin{alltt}
+fromCoalgebra :: (a -> Store b a) -> Lens a b
+fromCoalgebra l f = experiment f . l
+\end{alltt}
+
+
+There lens laws can convently expressed in this {\tmem{van Laarhoven}}
+representation as well.
+\begin{eqnarray*}
+  l \text{\tmtexttt{Identity}} & = & \text{\tmtexttt{Identity}}\\
+  l \left( \text{\tmtexttt{Compose}} \circ \text{\tmtexttt{fmap}} g \circ f
+  \right) & = & \text{\tmtexttt{Compose}} \circ \text{\tmtexttt{fmap}}  \left(
+  l g \right) \circ l f
+\end{eqnarray*}
+Interested readers can find the proof that these van Laarhoven laws are
+satified in Appendix~.
+
+One nice property of the van Laarhoven lens is that the identity and
+composition of lenses are simply the prelude functions.
+\begin{alltt}
+id :: Lens a a
+(.) :: Lens a b -> Lens b c -> Lens a c
+\end{alltt}
+
+
+The caveat is that the composition function is reversed from the usual order
+of composition. \ However, this reversed order actually works very well in
+practice since it matches the usual order of projections in tradition order
+found in programming. {\color{red} Need examples, and this should probably all
+be done at the beginning of this section.}
+
+\subsection{Lenses and the State Monad}
+
+Lenses work extraordinarily well with the state monad. Lenses let you focus in
+on and alter particular fields of your state allowing you to manipulate them.
+
+
+\begin{alltt}
+access :: Lens a b -> State a b
+access l = do s <- get
+              return (s^.l)
+
+(%=) :: Lens a b -> b -> State a ()
+l %= x = modify (l %~ b)
+\end{alltt}
+
+
+{\color{red} Example needed.}
+
+
+
+We can even define C-style imperitive update functions which allow us to write
+imperative looking code where lenses behave like LHS variables
+
+
+\begin{alltt}
+(+=), (-=), (*=) :: Num b => Lens a b -> b -> State a ()
+l += x = l %= (+ x)
+l -= x = l %= (subtract x)
+l *= x = l %= (* x)
+\end{alltt}
+
+
+However the real power of lenses lies in the \tmtexttt{focus} function.
+
+
+\begin{alltt}
+focus :: Lens a b -> State b c -> State a c
+focus l (State s) = State (l %%= s)
+\end{alltt}
+{\color{red} I hate the name \tmtexttt{\%\%=}.}
+
+
+
+The \tmtexttt{focus} function lets you promote a state transformation on a
+local state of type \tmtexttt{b} to a state transformation on a global state
+of type \tmtexttt{a} using a \tmtexttt{Lens a b}. \ This lets users large
+record for a global state for their state transformer program, but focus in on
+smaller and smaller fragments of this global state for subroutines of the
+state transformer. \ The type system then ensures that these subroutines do
+not access parts of the global state beyond what they are allowed to access.
+
+\section{Lens Families}
+
+A shortcoming of lenses as defined in the previous section is that setting a
+field can never change the type of the record. Consider the following simple
+pair type
+
+\tmtexttt{data Pair a b = Pair a b}
+
+
+
+The getter and setters of the first component are defined as
+\begin{alltt}
+get_first :: Pair a b -> a
+get_first (Pair x y) = x
+
+set_first :: a -> Pair a b -> Pair a b
+set_first x (Pair _ y) = Pair x y
+\end{alltt}
+
+
+This definition \tmtexttt{set\_first} cannot change the type of the first
+component. \ However, type inference gives a more general type for
+\tmtexttt{set\_first} which allows the type of the first component to be
+changed.
+
+\tmtexttt{set\_first :: a' -> Pair a b -> Pair a' b}
+
+
+
+We can give a more general definition of lenses that allows for such setter
+function to change the type parameters of record type.
+\begin{alltt}
+data LensFamily a a' b b' = LensFamily { getter : a -> b
+                                       ; setter : b' -> a -> a'
+                                       }
+\end{alltt}
+
+
+By generalizing the store comonad to the indexed store comonad, we can create
+lens representation as a coalgebroid for the indexed store comonad.
+\begin{alltt}
+data IStore i j a = IStore { peek :: j -> a
+                           , pos :: i
+                           }
+
+instace Functor (IStore i j) where
+  fmap f (IStore v b) = IStore (f . v) b
+
+extract :: IStore i i a -> a
+extract (IStore v b) = v b
+
+duplicate :: IStore i j a -> IStore i k (IStore k j a)
+duplicate (IStore v b) = IStore (IStore v) b
+
+newtype LensFamily a a' b b' =
+  LensFamily { runLensFamily : a -> IStore b b' a' }
+\end{alltt}
+
+
+The van Laarhoven represention can be generalized the same way
+\begin{alltt}
+type LensFamily a a' b b' =
+  forall f. (Functor f) => (b -> f b') -> a -> f a'
+\end{alltt}
+
+\section{Traversals}
+
+No matter what representation, a valid \tmtexttt{Lens a b} value picks out a
+single substructure of type \tmtexttt{b} from the type \tmtexttt{a}. \ There
+is a related structure we call \tmtexttt{Traversal a b} that picks out many
+substructures of type \tmtexttt{b} from the type \tmtexttt{a}.
+
+\tmtexttt{type Traversal a b = forall f. (Applicative f) => (b -> f b) -> a ->
+f a}
+
+
+
+For example, we can make a \tmtexttt{Traversal Person String} that references
+all three fields with the following.
+\begin{alltt}
+personTraversal :: Traversal Person String
+personTraversal f (Person name address email) =
+  Person <$> f name <*> f address <*> f email
+\end{alltt}
+
+
+This traversal can be used, for example, to produce a list strings from a
+\tmtexttt{Person} value.
+
+
+\begin{alltt}
+toListOf :: Traversal a b -> a -> [b]
+toListOf t = getConst . t (Const . (:[])) 
+
+personInfo :: Person -> [String]
+personInfo = toListOf personTraversal
+\end{alltt}
+
+
+We can also modify a \tmtexttt{Person} by lower-casing each field.
+
+
+\begin{alltt}
+(%~) :: Traversal a b -> (b -> b) -> (a -> a)
+t %~ f = runIdentity . t (Identity . f)
+
+lowerPerson :: Person -> Person
+lowerPerson = personTraversal %~ (map lowerCase)
+\end{alltt}
+
+
+An we can run through the traversal with a monadic map.
+
+
+\begin{alltt}
+mapMOf :: (Monad m) => Traversal a b -> (b -> m b) -> (a -> m a)
+mapMOf t f = unwrapMonad . t (WrapMonad . f)
+
+countChars :: Person -> Writer (Sum Integer) Person
+countChars = mapMOf personTraversal countString
+  where
+    countString :: String -> Writer (Sum Integer) String
+    countString s = do tell (Sum (length s))
+                       return s
+\end{alltt}
+
+
+Like lenses, in order for a traversal value to be valid, it must satify two
+laws. \ The laws are exactly the same as the laws for lenses.
+\begin{eqnarray*}
+  t \text{\tmtexttt{Identity}} & = & \text{\tmtexttt{Identity}}\\
+  t \left( \text{\tmtexttt{Compose}} \circ \text{\tmtexttt{fmap}} g \circ f
+  \right) & = & \text{\tmtexttt{Compose}} \circ \text{\tmtexttt{fmap}}  \left(
+  t g \right) \circ t f
+\end{eqnarray*}
+These laws ensure that a traversal is a ordered sequence of zero or more
+disjoint substructures of type \tmtexttt{b} of a structure of type
+\tmtexttt{a}.
+
+Similar to lenses, we can generalize traversals to allow update functions to
+change the type parameters of a structure.
+\begin{alltt}
+type TraversalFamily a a' b b' =
+  forall f. (Applicative f) => (b -> f b') -> a -> f a'
+\end{alltt}
+For example, we can create a traversal for both fields of our \tmtexttt{Pair}
+type that allows updates to change both types together.
+\begin{alltt}
+both :: TraversalFamily (Pair a a) (Pair a' a') a a'
+both f (Pair x y) = Pair <$> f x <*> f y
+\end{alltt}
+
+\[ \text{\tmtexttt{(both \%\~{ } length) (``Hello'', ``World!'')}} =
+   \text{\tmtexttt{(6,7)}} \]
+The \tmtexttt{Traversable} class provides a canoncial traversal for containers
+instantiating it. \ Recall the \tmtexttt{traverse} function.
+\begin{alltt}
+traverse :: (Traversal t, Applicative f) => (a -> f a) -> t a -> f (t a)
+\end{alltt}
+
+
+The signature for the \tmtexttt{traverse} function fits our traversal family.
+
+
+
+\tmtexttt{traverse :: (Traversal t) => TraversalFamily a b (t a) (t b)}
+
+
+
+{\color{red} Something about \tmtexttt{Traversal} laws.} Therefore
+\tmtexttt{traverse} can always be used as a \tmtexttt{TraversalFamily}.
+
+\subsection{Composing Lenses and Traversals}
+
+Recall that a lens is a single reference and a traversal is a sequence of zero
+or more disjoint references. Therefore every lens is a special case of a
+traversal. \ This means that we can compose a traversal and a lens, considered
+as a traversal of length 1, to get a traversal.
+
+This is the situtation where the van Laarhoven represenation really shines. \
+Rather than having to cast a lens to a traversal, we can directly compose
+lenses and traversals with the composition operation. Because we have used
+type synonyms instead of newtype, the \tmtexttt{Functor} constraint of the
+lens is combined by the type system with the \tmtexttt{Applicative} constraint
+of the traversable, yeilding an \tmtexttt{Applicative} constraint for the
+overall combination. \ Consider the following lens and traversal and their
+composition.
+\begin{alltt}
+_1 :: LensFamily (a, b) (a', b) a a'
+traverse :: TraversalFamily [a] [a'] a a'
+traverse._1 :: TraversalFamily [(a,b)] [(a',b)] a a'
+\end{alltt}
+
+
+Then we can use this composition to modify the first component of every value
+in a list of pairs.
+\[ \text{\tmtexttt{traverse.\_1 <\~{ } (\^{ }2) \$ [(2, ``Hello''), (3,
+   ``World'')]}} = \text{\tmtexttt{[(4, ``Hello''), (9, ``World'')]}} \]
+
+\subsection{Kleene Stores}
+
+{\color{red} This turns out to be kinda complicated; it should probably be
+relegated to an appendix.}
+
+We can represent traversals as a coalgebroids of a variation of the store
+comonad. \ First recall the definition of the store comonad.
+\begin{alltt}
+data Store i a = Store { peek :: i -> a
+                       , 
+                       }
+\end{alltt}
+The associated store comonad transformer is defined as.
+\begin{alltt}
+data StoreT i w a = StoreT { peekT :: w (i -> a)
+                           , posT :: i
+                           }
+
+instance Functor w => Functor (StoreT i w) where
+  fmap f (StoreT v b) = StoreT (fmap (f .) v) b
+
+instance Comonad w => Comonad (StoreT i w) where
+  extract (StoreT v b) = extract v b
+  duplicate (StoreT v b) = StoreT (extend StoreT v) b
+\end{alltt}
+
+
+We also note that the sum of two comonads is a comonad
+
+
+\begin{alltt}
+newtype (f1 :+: f2) a = SumF { getSumF :: Either (f1 a) (f2 a) }
+
+instance (Functor w1, Functor w2) => Functor (w1 :+: w2) where
+  fmap f (SumF x) = SumF ((fmap f +++ fmap f) x)
+
+instance (Comonad w1, Comonad w2) => Comonad (w1 :+: w2) where
+  extract (SumF x) = either extract extract x
+  duplicate (SumF (Left x)) = SumF . Left $ extend (SumF . Left) x
+  duplicate (SumF (Right x)) = SumF . Right $ extend (SumF . Right) x
+\end{alltt}
+
+
+and the \tmtexttt{Identity} functor is a comonad.
+
+
+\begin{alltt}
+instance Comonad Identity where
+  extract (Identity x) = x
+  duplicate x = Identity x
+\end{alltt}
+
+
+The Kleene store is defined as the infinite sum of itereated store trasformers
+
+
+\[ \text{\tmtexttt{KleeneStore i}} = \text{\tmtexttt{Identity :+: StoreT i
+   Identity :+: StoreT i (StoreT i Identity) :+: ...}} \]
+Naturally we define this recursively instead
+\begin{alltt}
+newType KleeneStore i a = KleeneStore
+  { runKleeneStore :: (Identity :+: StoreT i (KleeneStore i)) a }
+
+instance Functor (KleeneStore i) where
+  fmap f (KleeneStore k) = KleeneStore (fmap f k)
+
+instance Comonad (KleeneStore i) where
+  extract (KleeneStore k) = extract k
+  dupicate (KleeneStore k) = KleeneStore (extend KleeneStore k)
+\end{alltt}
+
+
+{\color{red} Describe what a Kleene store means.}
+
+
+
+Importantly, Kleene stores forms an applicative functor .
+
+
+\begin{alltt}
+instance Applicative (KleeneStore i) where
+  pure x = KleeneStore (SumF (Left (Identity x)))
+  (KleeneStore (SumF (Left (Identity f)))) <*> x = fmap f x
+  (KleeneStore (SumF (Right (StoreT v b))) <*> x =
+     Kleenestore (SumF (Right (StoreT (flip <$> v <*> x) b)))
+\end{alltt}
+
+
+A function called \tmtexttt{research} performs an analgous role to
+\tmtexttt{experiment} for Kleene stores; however \tmtexttt{research} requires
+an applicative functor.
+
+
+\begin{alltt}
+research :: Applicative f => (i -> f i) -> KleeneStore i a -> f a
+research _ (KleeneStore (SumF (Left (Identity x)))) = pure x
+research f (KleeneStore (SumF (Right (StoreT v b))) = f b <**> research f v
+\end{alltt}
+
+
+The \tmtexttt{research} function completely characterises a Kleene store in
+the sense that
+
+
+
+\tmtexttt{flip research :: KleeneStore i a -> forall f. Applicative f => (i ->
+f i) -> f a}
+
+forms an isomorphism between \tmtexttt{KleeneStore i a} and \tmtexttt{forall
+f. Applicative f -> (i -> f i) -> f a}. \ The inverse of this isomorphis is
+provided by
+
+
+
+\tmtexttt{\tmbsl f -> f (KleeneStore . SumF . Right . StoreT pure) :: (forall
+f. Applicative f => (i -> f i) -> f a) -> KleeneStore i a}
+
+{\color{red} Ought to define
+\begin{alltt}
+battery :: KleeneStore i (i -> a) -> i -> KleeneStore i a
+battery f = KleeneStore . SumF . Right . StoreT f
+\end{alltt}
+first.}
+
+
+
+This isomorphism implies we an alternative representation of
+\tmtexttt{Traversal a b} as a coalgebra \tmtexttt{a -> KleeneStore b a}. Such
+a coalgebra can be generated from a traversal with the following
+
+
+\begin{alltt}
+coalgTraverse :: Traversal a b -> a -> KleeneStore b a
+coalgTraverse t = t (battery (pure id))
+\end{alltt}
+
+
+Conversely, a traversal can be generated by such a coalgebra by the following.
+
+
+\begin{alltt}
+fromCoalg :: (a -> KleeneStore b a) -> Traversal a b
+fromCoalg t f = research f . t
+\end{alltt}
+
+\section{Mirrored Lenses}
+
+\section{Conclusion}
+
+\section{Acknowledgements}
+
+Wren for the name of Kleene store.
+
+\end{document}
